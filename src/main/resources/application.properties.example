@@ -1,0 +1,14 @@
+spring.application.name=Bastion
+
+spring.datasource.url=jdbc:postgresql://localhost:5432/Bastion
+spring.datasource.username=your_username
+spring.datasource.password=your_password
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+# Generate with: openssl rand -base64 64
+jwt.secret=your_base64_encoded_secret
+jwt.expiry.hours=24
