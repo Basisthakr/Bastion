@@ -13,7 +13,7 @@ import com.Basisttha.Bastion.Model.RevokedToken;
 public interface RevokedTokenRepository extends JpaRepository<RevokedToken, UUID >{
     boolean existsByToken(String token);
 
-    void deleteAllByExpiredAtBefore(LocalDateTime dateTime);
+    void deleteAllByExpiresAtBefore(LocalDateTime dateTime);
 
     @Modifying
     @Query("DELETE FROM RevokedToken r WHERE r.expiresAt < :now")

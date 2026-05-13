@@ -34,13 +34,11 @@ public class MessageService {
 
         Message message = Message.builder().sender(sender).recipient(receiver).cipherText(req.getCipherText()).nonce(req.getNonce()).build();
         Message saved = messageRepo.save(message);
-        messagingTemplate.convertAndSend("/topic/messages/" + receiver.getId(), toResponse(saved));
-
         saved.setDeliveryStatus(DeliveryStatus.DELIVERED);
         saved.setDeliveredAt(LocalDateTime.now());
-        messageRepo.save(message);
-
-        return toResponse(saved);
+        Message updated = messageRepo.save(saved);
+        messagingTemplate.convertAndSend("/topic/messages/" + receiver.getId(),toResponse(updated));
+        return toResponse(updated);
     }
 
     private MessageResponse toResponse(Message message) {

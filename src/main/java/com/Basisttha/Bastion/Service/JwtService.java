@@ -60,6 +60,15 @@ public class JwtService {
                 .toLocalDateTime();
     }
 
+    public Date extractIssuedAt(String token) {
+    return Jwts.parser()
+            .verifyWith(getSigningKey())
+            .build()
+            .parseSignedClaims(token)
+            .getPayload()
+            .getIssuedAt();
+    }
+
     public boolean isTokenValid(String token) {
         try {
             Date expiration = Jwts.parser()

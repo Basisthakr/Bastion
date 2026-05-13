@@ -35,6 +35,7 @@ public class User {
     private Status status;
     private LocalDateTime lastSeen;//Changed from Date to LocalDateTime
     private LocalDateTime createdAt;
+    private LocalDateTime keyRotatedAt;
 
     @PrePersist
     void setCreation(){

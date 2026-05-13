@@ -1,30 +1,22 @@
 package com.Basisttha.Bastion.Service;
 
+import com.Basisttha.Bastion.DTO.*;
+import com.Basisttha.Bastion.Model.*;
+import com.Basisttha.Bastion.Repository.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
-
-import org.springframework.stereotype.Service;
-
-import com.Basisttha.Bastion.DTO.AuthResponse;
-import com.Basisttha.Bastion.DTO.ChallengeRequest;
-import com.Basisttha.Bastion.DTO.ChallengeResponse;
-import com.Basisttha.Bastion.DTO.RegisterRequest;
-import com.Basisttha.Bastion.DTO.RegisterResponse;
-import com.Basisttha.Bastion.DTO.VerifyRequest;
-import com.Basisttha.Bastion.Model.AuthChallenges;
-import com.Basisttha.Bastion.Model.RevokedToken;
-import com.Basisttha.Bastion.Model.User;
-import com.Basisttha.Bastion.Repository.AuthChallengeRepository;
-import com.Basisttha.Bastion.Repository.RevokedTokenRepository;
-import com.Basisttha.Bastion.Repository.UserRepository;
-
-import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
@@ -32,13 +24,16 @@ public class AuthService {
 
     private final UserRepository userRepo;
     private final AuthChallengeRepository authRepo;
-    private final JwtService jwtService;
     private final RevokedTokenRepository revokedTokenRepository;
+    private final RecoveryKeyRepository recoveryKeyRepository;
+    private final JwtService jwtService;
+    private final BCryptPasswordEncoder passwordEncoder;
 
+    //REGISTER 
+    @Transactional
     public RegisterResponse register(RegisterRequest req) {
-        //Job 1: Check if username already exists in repo
         if (userRepo.existsByUsername(req.getUsername())) {
-            throw new RuntimeException("Username already exists");
+            throw new RuntimeException("Username already taken");
         }
 
         User user = User.builder()
@@ -47,67 +42,155 @@ public class AuthService {
                 .build();
 
         User saved = userRepo.save(user);
-        return new RegisterResponse(saved.getId(), saved.getUsername());
-    }
-    //Job 1 complete. User saved
 
-    // Job 2: Login. Part 1: Find user by their UUID
+        List<String> plainKeys = generateAndSaveRecoveryKeys(saved);
+
+        return new RegisterResponse(saved.getId(), saved.getUsername(), plainKeys);
+    }
+
+    //CHALLENGE
     public ChallengeResponse createChallenge(ChallengeRequest req) {
-        //Part 1: Find user by their UUID
-        User user = userRepo.findById(req.getUserId()).orElseThrow(() -> new RuntimeException("User not found"));//can also use Optional then check if optional is empty
-        //Part 1.5: Invalidate unused challenges
-        Optional<AuthChallenges> authOptional = authRepo.findByUserIdAndUsedFalse(user.getId());
-        if (!authOptional.isEmpty()) {
-            authRepo.deleteById(authOptional.get().getId());
-        }
-        //Part 2: Generate a random nonce.
+        User user = userRepo.findById(req.getUserId())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        authRepo.findByUserIdAndUsedFalse(user.getId())
+                .ifPresent(existing -> {
+                    existing.setUsed(true);
+                    authRepo.save(existing);
+                });
+
         String nonce = UUID.randomUUID().toString();
-        LocalDateTime expiry = LocalDateTime.now().plusSeconds(120);
+        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(120);
+
         AuthChallenges challenge = AuthChallenges.builder()
                 .user(user)
                 .nonce(nonce)
-                .expiresAt(expiry)
+                .expiresAt(expiresAt)
                 .build();
+
         authRepo.save(challenge);
-        System.out.println("Saved challenge for userId: " + challenge.getUser().getId());
-        System.out.println("Used: " + challenge.isUsed());
-        return new ChallengeResponse(nonce, expiry.toString());
+        return new ChallengeResponse(nonce, expiresAt.toString());
     }
 
-    //Job 3: Verify(for login attempt) if the request is valid
+    //VERIFY
     public AuthResponse verify(VerifyRequest req) {
-        //Part 1: find the user
-        User user = userRepo.findById(req.getUserId()).orElseThrow(() -> new RuntimeException("User not found"));//can also use Optional then check if optional is empty
-        Optional<AuthChallenges> authOptional = authRepo.findByUserIdAndUsedFalse(user.getId());
-        ////find active unused challenge. active = that isnt expired
-        System.out.println("Looking for challenge with userId: " + user.getId());
-        System.out.println("Challenge found: " + authOptional.isPresent());
-        if (authOptional.isPresent()) {
-            if (!LocalDateTime.now().isAfter(authOptional.get().getExpiresAt())) {
-                //is unused AND is active
-                //verify the signature now
-                boolean valid = verifySignature(authOptional.get().getNonce(), req.getSignature(), user.getPublicKey());
-                if (valid) {
-                    //generate JWT and send;
-                    authOptional.get().setUsed(true);//When change then save
-                    authRepo.save(authOptional.get());
-                    String jwtSecret = jwtService.generateToken(user);//jwt generation
-                    return new AuthResponse(jwtSecret);
-                } else {
-                    //close the auth here, or that can also be closed when a new challenge is issued?
-                    throw new RuntimeException("Signature Validation Failed");
-                }
-            } else {
-                throw new RuntimeException("The Log-in attempt has expired");
-            }
-        } else {
-            throw new RuntimeException("No active challenge found. Please request a new one");
+        User user = userRepo.findById(req.getUserId())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        AuthChallenges challenge = authRepo.findByUserIdAndUsedFalse(user.getId())
+                .orElseThrow(() -> new RuntimeException("No active challenge found"));
+
+        if (LocalDateTime.now().isAfter(challenge.getExpiresAt())) {
+            throw new RuntimeException("Challenge expired");
         }
 
+        boolean valid = verifySignature(
+                challenge.getNonce(),
+                req.getSignature(),
+                user.getPublicKey()
+        );
+
+        if (!valid) {
+            throw new RuntimeException("Invalid signature");
+        }
+
+        challenge.setUsed(true);
+        authRepo.save(challenge);
+
+        String token = jwtService.generateToken(user);
+        return new AuthResponse(token);
+    }
+
+    //LOGOUT
+    public void logout(String authorizationHeader) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
+            throw new RuntimeException("Missing or invalid Authorization header");
+        }
+
+        String token = authorizationHeader.substring(7);
+
+        if (revokedTokenRepository.existsByToken(token)) {
+            return;
+        }
+
+        LocalDateTime expiresAt = jwtService.extractExpiry(token);
+
+        RevokedToken revokedToken = RevokedToken.builder()
+                .token(token)
+                .expiresAt(expiresAt)
+                .revokedAt(LocalDateTime.now())
+                .build();
+
+        revokedTokenRepository.save(revokedToken);
+    }
+
+    //RECOVER ACCOUNT
+    @Transactional
+    public AuthResponse recoverAccount(RecoverAccountRequest req) {
+        User user = userRepo.findByUsername(req.getUsername())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        List<RecoveryKey> activeKeys = recoveryKeyRepository
+                .findByUserIdAndInvalidatedFalseAndUsedFalse(user.getId());
+
+        if (activeKeys.isEmpty()) {
+            throw new RuntimeException("No active recovery keys found");
+        }
+
+        RecoveryKey matchedKey = activeKeys.stream()
+                .filter(k -> passwordEncoder.matches(req.getRecoveryKey(), k.getKeyHash()))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Invalid recovery key"));
+
+        matchedKey.setUsed(true);
+        matchedKey.setUsedAt(LocalDateTime.now());
+        recoveryKeyRepository.save(matchedKey);
+
+        user.setPublicKey(req.getNewPublicKey());
+        user.setKeyRotatedAt(LocalDateTime.now());
+        userRepo.save(user);
+
+        String token = jwtService.generateToken(user);
+        return new AuthResponse(token);
+    }
+
+    //ROTATE KEY
+    @Transactional
+    public void rotateKey(User currentUser, RotateKeyRequest req) {
+        currentUser.setPublicKey(req.getNewPublicKey());
+        currentUser.setKeyRotatedAt(LocalDateTime.now());
+        userRepo.save(currentUser);
+    }
+
+    //REFRESH RECOVERY KEYS
+    @Transactional
+    public RecoveryKeyResponse refreshRecoveryKeys(User currentUser) {
+        recoveryKeyRepository.invalidateAllByUserId(currentUser.getId());
+        List<String> newKeys = generateAndSaveRecoveryKeys(currentUser);
+        return new RecoveryKeyResponse(newKeys, "Recovery keys refreshed. Store these safely — they will not be shown again.");
+    }
+
+    //PRIVATE HELPERS
+    private List<String> generateAndSaveRecoveryKeys(User user) {
+        List<String> plainKeys = new ArrayList<>();
+
+        for (int i = 0; i < 8; i++) {
+            String plainKey = UUID.randomUUID().toString().replace("-", "");
+            String hashed = passwordEncoder.encode(plainKey);
+
+            RecoveryKey recoveryKey = RecoveryKey.builder()
+                    .user(user)
+                    .keyHash(hashed)
+                    .build();
+
+            recoveryKeyRepository.save(recoveryKey);
+            plainKeys.add(plainKey);
+        }
+
+        return plainKeys;
     }
 
     private boolean verifySignature(String nonce, String signatureB64, String publicKeyB64) {
-        //return true;//Requires a real client to work
         try {
             byte[] publicKeyBytes = Base64.getDecoder().decode(publicKeyB64);
             X509EncodedKeySpec keySpec = new X509EncodedKeySpec(publicKeyBytes);
@@ -123,27 +206,5 @@ public class AuthService {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    public void logout(String authorizationHeader) {
-        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
-            throw new RuntimeException("Missing or invalid Authorization header");
-        }
-
-        String token = authorizationHeader.substring(7);
-
-        if (revokedTokenRepository.existsByToken(token)) {
-            return; // Already revoked, nothing to do
-        }
-
-        LocalDateTime expiresAt = jwtService.extractExpiry(token);
-
-        RevokedToken revokedToken = RevokedToken.builder()
-                .token(token)
-                .expiresAt(expiresAt)
-                .revokedAt(LocalDateTime.now())
-                .build();
-
-        revokedTokenRepository.save(revokedToken);
     }
 }

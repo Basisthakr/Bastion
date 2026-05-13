@@ -1,6 +1,9 @@
 package com.Basisttha.Bastion.Config;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Date;
 import java.util.UUID;
 
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -59,18 +62,30 @@ public class JwtFilter extends OncePerRequestFilter {
 
         // Set authentication in context if not already set
         if (SecurityContextHolder.getContext().getAuthentication() == null) {
-            String userId = jwtService.extractUserId(token);
-            if (userId != null) {
-                userRepo.findById(UUID.fromString(userId)).ifPresent(user -> {
-                    UsernamePasswordAuthenticationToken authToken =
-                            new UsernamePasswordAuthenticationToken(
-                                    user, null, Collections.emptyList());
-                    authToken.setDetails(
-                            new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(authToken);
-                });
+    String userId = jwtService.extractUserId(token);
+    if (userId != null) {
+        userRepo.findById(UUID.fromString(userId)).ifPresent(user -> {
+
+            // reject tokens issued before key rotation
+            if (user.getKeyRotatedAt() != null) {
+                Date issuedAt = jwtService.extractIssuedAt(token);
+                LocalDateTime tokenIssuedAt = issuedAt.toInstant()
+                        .atZone(ZoneId.systemDefault())
+                        .toLocalDateTime();
+                if (tokenIssuedAt.isBefore(user.getKeyRotatedAt())) {
+                    return; // token predates key rotation, reject silently
+                }
             }
-        }
+
+            UsernamePasswordAuthenticationToken authToken =
+                    new UsernamePasswordAuthenticationToken(
+                            user, null, Collections.emptyList());
+            authToken.setDetails(
+                    new WebAuthenticationDetailsSource().buildDetails(request));
+            SecurityContextHolder.getContext().setAuthentication(authToken);
+        });
+    }
+}
 
         filterChain.doFilter(request, response);
     }
