@@ -1,5 +1,6 @@
 package com.Basisttha.Bastion.Service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Service;
 import com.Basisttha.Bastion.DTO.MessageResponse;
 import com.Basisttha.Bastion.DTO.SendMessageRequest;
 import com.Basisttha.Bastion.Exception.UserNotFoundException;
+import com.Basisttha.Bastion.Model.DeliveryStatus;
 import com.Basisttha.Bastion.Model.Message;
 import com.Basisttha.Bastion.Model.User;
 import com.Basisttha.Bastion.Repository.MessageRepository;
@@ -32,8 +34,11 @@ public class MessageService {
 
         Message message = Message.builder().sender(sender).recipient(receiver).cipherText(req.getCipherText()).nonce(req.getNonce()).build();
         Message saved = messageRepo.save(message);
+        messagingTemplate.convertAndSend("/topic/messages/" + receiver.getId(), toResponse(saved));
 
-        messagingTemplate.convertAndSend("/topic/messages/"+receiver.getId(), toResponse(saved));
+        saved.setDeliveryStatus(DeliveryStatus.DELIVERED);
+        saved.setDeliveredAt(LocalDateTime.now());
+        messageRepo.save(message);
 
         return toResponse(saved);
     }
@@ -50,10 +55,13 @@ public class MessageService {
         );
     }
 
-    public List<MessageResponse> getConversation(UUID currentUserId, UUID contactId){
-        return messageRepo.findMConversationBetween(currentUserId, contactId)
-        .stream()
-        .map(this::toResponse)
-        .collect(Collectors.toList());
+    public List<MessageResponse> getConversation(UUID currentUserId, UUID contactId) {
+        List<Message> messages = messageRepo.findMConversationBetween(currentUserId, contactId);
+
+        messageRepo.markMessagesAsRead(currentUserId, contactId);
+
+        return messages.stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
     }
 }

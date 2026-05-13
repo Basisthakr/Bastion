@@ -53,5 +53,4 @@ public class Message {
         this.deliveryStatus = DeliveryStatus.PENDING;
         this.createdAt = LocalDateTime.now();
     }
-
 }

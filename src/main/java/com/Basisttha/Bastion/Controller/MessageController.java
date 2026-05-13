@@ -3,7 +3,6 @@ package com.Basisttha.Bastion.Controller;
 import java.util.List;
 import java.util.UUID;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +17,7 @@ import com.Basisttha.Bastion.DTO.SendMessageRequest;
 import com.Basisttha.Bastion.Model.User;
 import com.Basisttha.Bastion.Service.MessageService;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @RestController
@@ -28,13 +28,13 @@ public class MessageController {
     private final MessageService messageService;
 
     @PostMapping("/send")
-    public ResponseEntity<MessageResponse> send(@RequestBody SendMessageRequest req){
+    public ResponseEntity<MessageResponse> send(@Valid @RequestBody SendMessageRequest req){
         User currentUser = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
         return ResponseEntity.ok(messageService.sendMessage(currentUser.getId(), req));
     }
 
     @GetMapping("/conversation/{contactId}")
-    public ResponseEntity<List<MessageResponse>> getConversation(@PathVariable UUID contactId){
+    public ResponseEntity<List<MessageResponse>> getConversation(@Valid @PathVariable UUID contactId){
         User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
         return ResponseEntity.ok(messageService.getConversation(user.getId(), contactId));
     }

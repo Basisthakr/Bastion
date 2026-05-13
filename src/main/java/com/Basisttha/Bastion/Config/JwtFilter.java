@@ -1,18 +1,15 @@
 package com.Basisttha.Bastion.Config;
 
 import java.io.IOException;
-import java.util.Optional;
 import java.util.UUID;
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationContext;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import com.Basisttha.Bastion.Model.User;
+import com.Basisttha.Bastion.Repository.RevokedTokenRepository;
 import com.Basisttha.Bastion.Repository.UserRepository;
 import com.Basisttha.Bastion.Service.JwtService;
 
@@ -23,34 +20,58 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 
+
 @Component
 @RequiredArgsConstructor
 public class JwtFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final UserRepository userRepo;
+    private final RevokedTokenRepository revokedTokenRepository;
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws IOException, ServletException {
-        String authHeader = request.getHeader("Authorization");
-        String token = null;
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain)
+            throws IOException, ServletException {
 
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            token = authHeader.substring(7);
-            if(!jwtService.isTokenValid(token)){
-                filterChain.doFilter(request, response);
-                return;
-            }
+        String authHeader = request.getHeader("Authorization");
+
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        String token = authHeader.substring(7);
+
+        // Reject if token is invalid
+        if (!jwtService.isTokenValid(token)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        // Reject if token has been revoked (logged out)
+        if (revokedTokenRepository.existsByToken(token)) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.getWriter().write("Token has been revoked");
+            return;
+        }
+
+        // Set authentication in context if not already set
+        if (SecurityContextHolder.getContext().getAuthentication() == null) {
             String userId = jwtService.extractUserId(token);
-            if(userId!=null && SecurityContextHolder.getContext().getAuthentication()==null){
-                Optional<User> user = userRepo.findById(UUID.fromString(userId));
-                if(user.isPresent()){
-                    UsernamePasswordAuthenticationToken authenticationToken = new UsernamePasswordAuthenticationToken(user.get(),null,Collections.emptyList());
-                    authenticationToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(authenticationToken);
-                }
+            if (userId != null) {
+                userRepo.findById(UUID.fromString(userId)).ifPresent(user -> {
+                    UsernamePasswordAuthenticationToken authToken =
+                            new UsernamePasswordAuthenticationToken(
+                                    user, null, Collections.emptyList());
+                    authToken.setDetails(
+                            new WebAuthenticationDetailsSource().buildDetails(request));
+                    SecurityContextHolder.getContext().setAuthentication(authToken);
+                });
             }
         }
+
         filterChain.doFilter(request, response);
     }
 }

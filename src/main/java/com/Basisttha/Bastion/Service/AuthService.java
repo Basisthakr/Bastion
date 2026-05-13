@@ -6,11 +6,9 @@ import java.security.Signature;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.LocalDateTime;
 import java.util.Base64;
-import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.Basisttha.Bastion.DTO.AuthResponse;
@@ -20,31 +18,24 @@ import com.Basisttha.Bastion.DTO.RegisterRequest;
 import com.Basisttha.Bastion.DTO.RegisterResponse;
 import com.Basisttha.Bastion.DTO.VerifyRequest;
 import com.Basisttha.Bastion.Model.AuthChallenges;
+import com.Basisttha.Bastion.Model.RevokedToken;
 import com.Basisttha.Bastion.Model.User;
 import com.Basisttha.Bastion.Repository.AuthChallengeRepository;
+import com.Basisttha.Bastion.Repository.RevokedTokenRepository;
 import com.Basisttha.Bastion.Repository.UserRepository;
 
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 import lombok.RequiredArgsConstructor;
-
 
 @Service
 @RequiredArgsConstructor
 public class AuthService {
-    @Value("${jwt.secret}")
-    private String jwtSecret;
 
-    @Value("${jwt.expiry.hours}")
-    private int jwtExpiryHours;
-
-     
     private final UserRepository userRepo;
     private final AuthChallengeRepository authRepo;
     private final JwtService jwtService;
+    private final RevokedTokenRepository revokedTokenRepository;
 
-
-    public RegisterResponse register(RegisterRequest req){
+    public RegisterResponse register(RegisterRequest req) {
         //Job 1: Check if username already exists in repo
         if (userRepo.existsByUsername(req.getUsername())) {
             throw new RuntimeException("Username already exists");
@@ -61,7 +52,7 @@ public class AuthService {
     //Job 1 complete. User saved
 
     // Job 2: Login. Part 1: Find user by their UUID
-    public ChallengeResponse createChallenge(ChallengeRequest req){
+    public ChallengeResponse createChallenge(ChallengeRequest req) {
         //Part 1: Find user by their UUID
         User user = userRepo.findById(req.getUserId()).orElseThrow(() -> new RuntimeException("User not found"));//can also use Optional then check if optional is empty
         //Part 1.5: Invalidate unused challenges
@@ -84,10 +75,11 @@ public class AuthService {
     }
 
     //Job 3: Verify(for login attempt) if the request is valid
-    public AuthResponse verify(VerifyRequest req){
+    public AuthResponse verify(VerifyRequest req) {
         //Part 1: find the user
         User user = userRepo.findById(req.getUserId()).orElseThrow(() -> new RuntimeException("User not found"));//can also use Optional then check if optional is empty
-        Optional<AuthChallenges> authOptional = authRepo.findByUserIdAndUsedFalse(user.getId()); ////find active unused challenge. active = that isnt expired
+        Optional<AuthChallenges> authOptional = authRepo.findByUserIdAndUsedFalse(user.getId());
+        ////find active unused challenge. active = that isnt expired
         System.out.println("Looking for challenge with userId: " + user.getId());
         System.out.println("Challenge found: " + authOptional.isPresent());
         if (authOptional.isPresent()) {
@@ -115,8 +107,7 @@ public class AuthService {
     }
 
     private boolean verifySignature(String nonce, String signatureB64, String publicKeyB64) {
-        return true;//Requires a real client to work
-        /*
+        //return true;//Requires a real client to work
         try {
             byte[] publicKeyBytes = Base64.getDecoder().decode(publicKeyB64);
             X509EncodedKeySpec keySpec = new X509EncodedKeySpec(publicKeyBytes);
@@ -132,6 +123,27 @@ public class AuthService {
         } catch (Exception e) {
             return false;
         }
-        */
+    }
+
+    public void logout(String authorizationHeader) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
+            throw new RuntimeException("Missing or invalid Authorization header");
+        }
+
+        String token = authorizationHeader.substring(7);
+
+        if (revokedTokenRepository.existsByToken(token)) {
+            return; // Already revoked, nothing to do
+        }
+
+        LocalDateTime expiresAt = jwtService.extractExpiry(token);
+
+        RevokedToken revokedToken = RevokedToken.builder()
+                .token(token)
+                .expiresAt(expiresAt)
+                .revokedAt(LocalDateTime.now())
+                .build();
+
+        revokedTokenRepository.save(revokedToken);
     }
 }
